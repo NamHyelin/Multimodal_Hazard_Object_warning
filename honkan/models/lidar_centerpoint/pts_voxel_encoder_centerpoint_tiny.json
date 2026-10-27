@@ -1,0 +1,11 @@
+{"Layers": ["Reformatting CopyNode for Input Tensor 0 to {ForeignNode[45 + ONNXTRT_Broadcast...ReduceMax_23]}"
+,"MatMul_0_myl1_0"
+,"__myl_MulAddReshMoveTranReluMaxr_myl1_1"
+,"__myl_ReplConcTran_myl1_2"
+,"MatMul_18_myl1_3"
+,"__myl_MulAddReshMoveTranReluMaxr_myl1_4"
+,"Reformatting CopyNode for Output Tensor 0 to {ForeignNode[45 + ONNXTRT_Broadcast...ReduceMax_23]}"
+],
+"Bindings": ["input_features"
+,"pillar_features"
+]}

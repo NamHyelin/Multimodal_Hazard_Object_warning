@@ -1,0 +1,11 @@
+{
+  "track_topic": "/perception/object_recognition/tracking/objects",
+  "output_topic": "/perception/id_association/results",
+  "track_tolerance_sec": 0.15,
+  "result_wait_sec": 0.05,
+  "max_input_age_sec": 0.6,
+  "min_yolo_score": 0.10,
+  "min_track_score": 0.35,
+  "confirmation_frames": 3,
+  "ambiguity_margin": 0.08
+}

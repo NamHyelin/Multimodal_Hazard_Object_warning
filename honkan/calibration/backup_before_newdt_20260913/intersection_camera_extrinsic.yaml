@@ -1,0 +1,11 @@
+parent_frame: map
+child_frame: intersection_camera
+translation:
+  x: -13493.303006615692
+  y: -43708.109582823090
+  z: 73.826469784784
+rotation:
+  x: 0.318035153940
+  y: 0.746647706710
+  z: -0.543426446075
+  w: -0.214612536049

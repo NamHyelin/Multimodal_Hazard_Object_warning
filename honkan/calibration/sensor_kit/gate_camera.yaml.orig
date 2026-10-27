@@ -1,0 +1,26 @@
+image_width: 640
+image_height: 480
+camera_name: gate_camera
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [557.394772,   0.000000, 305.650453,
+           0.000000, 559.493109, 244.210080,
+           0.000000,   0.000000,   1.000000]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [-0.380266, 0.162688, -0.001962, 0.004999, 0.000000]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1., 0., 0.,
+         0., 1., 0.,
+         0., 0., 1.]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [557.394772,   0.000000, 305.650453, 0.000000,
+           0.000000, 559.493109, 244.210080, 0.000000,
+           0.000000,   0.000000,   1.000000, 0.000000]

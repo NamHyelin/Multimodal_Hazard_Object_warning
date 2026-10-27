@@ -1,0 +1,14 @@
+# Copy this file to compose.devices.yaml and uncomment only devices that exist.
+services:
+  autoware_runtime:
+    # devices:
+    #   - /dev/video0:/dev/video0       # V4L2/USB camera
+    #   - /dev/ttyUSB0:/dev/ttyUSB0     # GNSS/IMU
+    #   - /dev/ttyACM0:/dev/ttyACM0     # GNSS/IMU
+    # group_add:
+    #   - video
+    #   - dialout
+    # device_cgroup_rules:
+    #   - "c 81:* rmw"                  # Video devices
+    #   - "c 188:* rmw"                 # USB serial
+

@@ -1,0 +1,35 @@
+# 1920x1080 projection parameters synchronized on 2026-09-12 from the live
+# Taki PointPainting CameraInfo on new-dt-server. The distortion coefficients
+# are the 2026-09-07 joint intrinsic/extrinsic fit: they are effective
+# projection parameters, not a standalone physical lens calibration.
+image_width: 1920
+image_height: 1080
+camera_name: intersection_camera
+
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [1150.742000,   0.000000, 938.129000,
+           0.000000, 1146.736000, 559.289000,
+           0.000000,   0.000000,   1.000000]
+
+distortion_model: plumb_bob
+
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [-0.175500, 0.029800, -0.010420, -0.030750, 0.000000]
+
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0,
+         0.0, 1.0, 0.0,
+         0.0, 0.0, 1.0]
+
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [1150.742000,   0.000000, 938.129000, 0.000000,
+           0.000000, 1146.736000, 559.289000, 0.000000,
+           0.000000,   0.000000,   1.000000, 0.000000]

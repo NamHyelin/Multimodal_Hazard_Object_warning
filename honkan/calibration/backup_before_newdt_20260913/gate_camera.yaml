@@ -1,0 +1,23 @@
+# Provisional 1920x1080 intrinsics estimated on 2026-09-12 by matching the
+# fixed scene against the calibrated 640x480 image. Distortion is retained
+# from the original calibration until a native-resolution calibration is done.
+image_width: 1920
+image_height: 1080
+camera_name: gate_camera
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [1114.015814, 0.000000, 928.942044, 0.000000, 1118.209576, 540.894030, 0.000000, 0.000000, 1.000000]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [-0.380266, 0.162688, -0.001962, 0.004999, 0.000000]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [1114.015814, 0.000000, 928.942044, 0.000000, 0.000000, 1118.209576, 540.894030, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000]

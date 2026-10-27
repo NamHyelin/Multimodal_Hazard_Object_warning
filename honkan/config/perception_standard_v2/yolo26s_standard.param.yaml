@@ -1,0 +1,20 @@
+/**:
+  ros__parameters:
+    is_roi_overlap_segmentation: false
+    overlap_roi_score_threshold: 0.3
+    is_publish_color_mask: false
+    publish_visualization: true
+    publish_masks: false
+    publish_debug_metrics: true
+    use_image_transport: false
+    score_threshold: 0.10
+    nms_threshold: 0.70
+    precision: "fp16"
+    calibration_algorithm: "MinMax"
+    dla_core_id: -1
+    quantize_first_layer: false
+    quantize_last_layer: false
+    profile_per_layer: false
+    clip_value: 0.0
+    gpu_id: 0
+    calibration_image_list_path: ""

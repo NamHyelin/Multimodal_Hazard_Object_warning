@@ -1,0 +1,29 @@
+# 1920x1080 effective projection parameters copied on 2026-09-13 from the
+# live new-dt-server PointPainting CameraInfo topic /cam/taki_gate/camera_info.
+# Source frame there is taki_gate_camera; the local equivalent is gate_camera.
+image_width: 1920
+image_height: 1080
+camera_name: gate_camera
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [1114.823000,   0.000000, 930.564000,
+           0.000000, 1119.020000, 541.693000,
+           0.000000,   0.000000,   1.000000]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [-0.380266, 0.162688, -0.001962, 0.004999, 0.000000]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1., 0., 0.,
+         0., 1., 0.,
+         0., 0., 1.]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [1114.823000,   0.000000, 930.564000, 0.000000,
+           0.000000, 1119.020000, 541.693000, 0.000000,
+           0.000000,   0.000000,   1.000000, 0.000000]

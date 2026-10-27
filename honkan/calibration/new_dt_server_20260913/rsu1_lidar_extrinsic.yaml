@@ -1,0 +1,11 @@
+parent_frame: base_link
+child_frame: rsu1/rslidar
+translation:
+  x: -13493.5839410
+  y: -43708.8589474
+  z: 73.3625841
+rotation:
+  x: 0.002952810357
+  y: -0.002084797726
+  z: -0.945946929740
+  w: 0.324301311504

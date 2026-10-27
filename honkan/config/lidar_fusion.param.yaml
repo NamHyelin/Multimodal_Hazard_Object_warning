@@ -1,0 +1,21 @@
+/**:
+  ros__parameters:
+    debug_mode: false
+    rosbag_length: 10.0
+    maximum_queue_size: 10
+    # Wait long enough for the other independent 20 Hz scanner to arrive.
+    # Matching still selects the nearest timestamp; incomplete timeout outputs
+    # are audited before this topic is connected to a detector.
+    timeout_sec: 0.075
+    is_motion_compensated: false
+    publish_synchronized_pointcloud: true
+    keep_input_frame_in_synchronized_pointcloud: false
+    publish_previous_but_late_pointcloud: false
+    synchronized_pointcloud_postfix: pointcloud
+    input_twist_topic_type: twist
+    input_topics:
+      - /fusion/rsu1/pointcloud_xyzirc
+      - /fusion/rsu4/pointcloud_xyzirc
+    output_frame: lidar_fusion
+    matching_strategy:
+      type: naive

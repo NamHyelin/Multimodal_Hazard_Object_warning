@@ -1,0 +1,31 @@
+image_width: 640
+image_height: 480
+camera_name: intersection_camera
+
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [575.353902,   0.000000, 309.432767,
+           0.000000, 573.350898, 253.007993,
+           0.000000,   0.000000,   1.000000]
+
+distortion_model: plumb_bob
+
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [-0.395749, 0.157663, -0.004566, 0.002915, 0.000000]
+
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0,
+         0.0, 1.0, 0.0,
+         0.0, 0.0, 1.0]
+
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [575.353902,   0.000000, 309.432767, 0.000000,
+           0.000000, 573.350898, 253.007993, 0.000000,
+           0.000000,   0.000000,   1.000000, 0.000000]

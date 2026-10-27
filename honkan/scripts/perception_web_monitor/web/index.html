@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>双路感知监控</title>
+<style>body{margin:24px;background:#101820;color:#e9f0f6;font:16px system-ui}h1{font-size:24px}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:20px}article{background:#1d2935;padding:16px;border-radius:12px}img{width:100%;background:#000;min-height:180px}pre{white-space:pre-wrap;font:14px monospace}button{padding:8px 16px;cursor:pointer}.stale{border:2px solid #ff745f}p{color:#aebccc}@media(max-width:500px){main{display:block}article{margin-bottom:20px}}</style>
+<h1>Perception Standard V2 · 双路视觉确认</h1>
+<p><span style="color:#00dc00">绿色：YOLO26s 二维框</span>　<span style="color:cyan">青色：CenterPoint 投影（默认二维外接矩形，可切回三维线框）</span> · 原始相机约 10 FPS</p>
+<p>ID#数字：已连续确认的 Tracker 关联；带 ?：候选；紫色矩形：所关联轨迹的投影。ID 是轨迹身份，不代表目标真实性。</p>
+<button id="pause">暂停视频</button>
+<label>雷达显示：<select id="lidar-mode"><option value="2d">2D 外接矩形</option><option value="3d">3D 线框</option></select></label>
+<span>两路同时切换，仅改变显示；重启服务恢复默认。</span>
+<p id="connection">正在连接…</p><main id="cams"></main>
+<script>
+const names=['gate','intersection']; let paused=false;
+for(const n of names){const a=document.createElement('article');a.innerHTML=`<h2>${n}</h2><img id="img-${n}" src="/stream/${n}.mjpg" alt="${n} 视频"><pre id="stat-${n}">等待数据</pre>`;document.querySelector('#cams').append(a)}
+document.querySelector('#pause').onclick=()=>{paused=!paused;for(const n of names){const im=document.querySelector('#img-'+n);if(paused)im.removeAttribute('src');else im.src='/stream/'+n+'.mjpg'}document.querySelector('#pause').textContent=paused?'恢复视频':'暂停视频'};
+const modeSelect=document.querySelector('#lidar-mode');
+modeSelect.onchange=async()=>{
+  modeSelect.disabled=true;
+  try{
+    const r=await fetch('/api/display',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lidar_box_mode:modeSelect.value})});
+    if(!r.ok)throw Error(r.status);
+    modeSelect.value=(await r.json()).lidar_box_mode;
+  }catch(e){document.querySelector('#connection').textContent='切换失败：'+e}
+  finally{modeSelect.disabled=false}
+};
+async function poll(){
+  try{
+    const r=await fetch('/api/status',{cache:'no-store'});if(!r.ok)throw Error(r.status);
+    const s=await r.json();
+    document.querySelector('#connection').textContent=paused?'视频已暂停':'状态每秒刷新';
+    const settings=await fetch('/api/display',{cache:'no-store'});
+    if(settings.ok&&!modeSelect.disabled)modeSelect.value=(await settings.json()).lidar_box_mode;
+    for(const n of names){
+      const d=s[n];document.querySelector('#img-'+n).classList.toggle('stale',!d.online);
+      document.querySelector('#stat-'+n).textContent=`${d.online?'在线':'画面过期 / 等待相机'} · ${d.fps} FPS\nYOLO: ${d.yolo??'等待'} · ${d.yolo_boxes??0} 框 · Δt ${d.yolo_dt_ms??'—'} ms\nLiDAR: ${d.lidar??'等待'} · ${d.lidar_boxes??0} 可见框 · ${d.lidar_box_mode??'—'} · Δt ${d.lidar_dt_ms??'—'} ms\n图像时间戳距处理时刻 ${d.image_age_ms??'—'} ms · 输出距今 ${d.output_age_sec??'—'} s${d.error?'\n错误: '+d.error:''}`;
+    }
+  }catch(e){document.querySelector('#connection').textContent='服务连接失败：'+e;for(const n of names)document.querySelector('#img-'+n).classList.add('stale')}
+  setTimeout(poll,1000)
+}poll();
+</script></html>

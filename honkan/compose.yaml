@@ -1,0 +1,57 @@
+services:
+  autoware_runtime:
+    image: df740b754244
+    container_name: tian_autoware_runtime
+    hostname: tian-autoware-runtime
+    network_mode: host
+    runtime: nvidia
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    working_dir: /autoware_runtime
+    environment:
+      ROS_DISTRO: humble
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      CYCLONEDDS_URI: file:///autoware_runtime/cyclonedds.xml
+      ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-30}"
+      AUTOWARE_RUNTIME: "1"
+      NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-all}"
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      LD_LIBRARY_PATH: "/usr/local/lib:/opt/acados/lib:/usr/local/cuda/lib64"
+      DISPLAY: "${DISPLAY:-}"
+    volumes:
+      - ./:/autoware_runtime
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Match TensorRT to the host JetPack/R39 GPU stack. Autoware links the stable TRT 10 ABI.
+      - /usr/lib/aarch64-linux-gnu/libnvinfer.so.10.16.2:/usr/local/lib/libnvinfer.so.10:ro
+      - /usr/lib/aarch64-linux-gnu/libnvinfer_plugin.so.10.16.2:/usr/local/lib/libnvinfer_plugin.so.10:ro
+      - /usr/lib/aarch64-linux-gnu/libnvonnxparser.so.10.16.2:/usr/local/lib/libnvonnxparser.so.10:ro
+      - /usr/lib/aarch64-linux-gnu/libnvinfer_vc_plugin.so.10.16.2:/usr/local/lib/libnvinfer_vc_plugin.so.10:ro
+      - /usr/lib/aarch64-linux-gnu/libnvinfer_builder_resource_ptx.so.10.16.2:/usr/local/lib/libnvinfer_builder_resource_ptx.so.10.16.2:ro
+      - /usr/lib/aarch64-linux-gnu/libnvinfer_builder_resource_sm75.so.10.16.2:/usr/local/lib/libnvinfer_builder_resource_sm75.so.10.16.2:ro
+      - /usr/lib/aarch64-linux-gnu/libnvinfer_builder_resource_sm80.so.10.16.2:/usr/local/lib/libnvinfer_builder_resource_sm80.so.10.16.2:ro
+      - /usr/lib/aarch64-linux-gnu/libnvinfer_builder_resource_sm86.so.10.16.2:/usr/local/lib/libnvinfer_builder_resource_sm86.so.10.16.2:ro
+      - /usr/lib/aarch64-linux-gnu/libnvinfer_builder_resource_sm89.so.10.16.2:/usr/local/lib/libnvinfer_builder_resource_sm89.so.10.16.2:ro
+      - /usr/lib/aarch64-linux-gnu/libnvinfer_builder_resource_sm90.so.10.16.2:/usr/local/lib/libnvinfer_builder_resource_sm90.so.10.16.2:ro
+      - /usr/lib/aarch64-linux-gnu/libnvinfer_builder_resource_sm100.so.10.16.2:/usr/local/lib/libnvinfer_builder_resource_sm100.so.10.16.2:ro
+      - /usr/lib/aarch64-linux-gnu/libnvinfer_builder_resource_sm110.so.10.16.2:/usr/local/lib/libnvinfer_builder_resource_sm110.so.10.16.2:ro
+      - /usr/lib/aarch64-linux-gnu/libnvinfer_builder_resource_sm120.so.10.16.2:/usr/local/lib/libnvinfer_builder_resource_sm120.so.10.16.2:ro
+    command: ["/bin/bash"]
+
+  rslidar:
+    image: df740b754244
+    container_name: tian_rslidar
+    hostname: tian-rslidar
+    network_mode: host
+    restart: unless-stopped
+    working_dir: /autoware_runtime
+    depends_on:
+      - autoware_runtime
+    environment:
+      ROS_DISTRO: humble
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      CYCLONEDDS_URI: file:///autoware_runtime/cyclonedds.xml
+      ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-30}"
+    volumes:
+      - ./:/autoware_runtime
+    command: ["/autoware_runtime/scripts/run/run_rslidar.sh"]

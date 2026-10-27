@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <!-- Change to a sensor-facing NIC such as eth0 if automatic selection is wrong. -->
+      <Interfaces>
+        <NetworkInterface autodetermine="true" priority="default" multicast="default" />
+      </Interfaces>
+      <!-- Discovery multicast only; large samples use per-reader unicast. -->
+      <AllowMulticast>spdp</AllowMulticast>
+    </General>
+    <Internal>
+      <SocketReceiveBufferSize min="16MiB" max="32MiB" />
+      <SocketSendBufferSize min="4MiB" max="8MiB" />
+      <DefragUnreliableMaxSamples>64</DefragUnreliableMaxSamples>
+    </Internal>
+  </Domain>
+</CycloneDDS>
+

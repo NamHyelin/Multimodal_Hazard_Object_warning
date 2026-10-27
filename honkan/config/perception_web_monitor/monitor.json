@@ -1,0 +1,14 @@
+{
+  "bind": "127.0.0.1",
+  "port": 8088,
+  "fps": 10,
+  "image_transport": "jpeg_ipc",
+  "width": 1280,
+  "jpeg_quality": 78,
+  "sync_wait_sec": 0.08,
+  "sync_tolerance_sec": 0.10,
+  "yolo_score": 0.10,
+  "lidar_score": 0.0,
+  "lidar_box_mode": "2d",
+  "centerpoint_topic": "/perception/object_recognition/detection/centerpoint/objects"
+}
