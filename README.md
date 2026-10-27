@@ -24,7 +24,7 @@ The architecture is designed to evaluate **end-to-end behavior and latency** in 
 ### End-to-End Pipeline
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/51797ffe-d367-4426-8828-669ebf7e6511" width="95%" alt="Multimodal Hazard Object warning Framework"/>
+  <img src="/hazard.png" width="95%" alt="Multimodal Hazard Object warning Framework"/>
 </p>
 
 
