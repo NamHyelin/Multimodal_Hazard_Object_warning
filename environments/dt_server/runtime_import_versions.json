@@ -1,0 +1,33 @@
+{
+  "python": "3.10.12 (main, Aug 31 2026, 10:18:17) [GCC 11.4.0]",
+  "modules": {
+    "torch": {
+      "version": "2.6.0+cu124",
+      "file": "/home/morita/hyelin/.venv/lib/python3.10/site-packages/torch/__init__.py"
+    },
+    "numpy": {
+      "version": "2.2.6",
+      "file": "/home/morita/hyelin/.venv/lib/python3.10/site-packages/numpy/__init__.py"
+    },
+    "PIL": {
+      "version": "12.3.0",
+      "file": "/home/morita/hyelin/.venv/lib/python3.10/site-packages/PIL/__init__.py"
+    },
+    "transformers": {
+      "version": "5.17.0",
+      "file": "/home/morita/hyelin/.venv/lib/python3.10/site-packages/transformers/__init__.py"
+    },
+    "diffusers": {
+      "version": "0.40.0",
+      "file": "/home/morita/hyelin/.venv/lib/python3.10/site-packages/diffusers/__init__.py"
+    },
+    "cv2": {
+      "import_error_type": "ModuleNotFoundError",
+      "message": "No module named 'cv2'"
+    },
+    "rclpy": {
+      "import_error_type": "ModuleNotFoundError",
+      "message": "No module named 'rclpy'"
+    }
+  }
+}

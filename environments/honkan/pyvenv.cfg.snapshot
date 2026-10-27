@@ -1,0 +1,5 @@
+home = /usr/bin
+implementation = CPython
+uv = 0.12.9
+version_info = 3.10.12
+include-system-site-packages = true

@@ -1,0 +1,74 @@
+{
+  "side": "dt_server",
+  "captured_at_utc": "2026-10-27T05:08:14.336219+00:00",
+  "source": "/home/morita/hyelin",
+  "read_only_export": true,
+  "files": [
+    {
+      "path": "dt_server/AR_background.jpg",
+      "sha256": "72d92359a0209429c002f3526e372762311b85cd7c427e904a5bbdcd3c8286c8",
+      "size": 3447893
+    },
+    {
+      "path": "dt_server/T2I.py",
+      "sha256": "d76398964132e14c5102d4427bd1c6e36401cf37fe8f6336256255a1c8c8932d",
+      "size": 2564
+    },
+    {
+      "path": "dt_server/dt_server.py",
+      "sha256": "6ebe1c3e6a1e3a67bc682100dc7140979f419d3dcce1fb6b09ab2b9cbdebb5f0",
+      "size": 18851
+    },
+    {
+      "path": "dt_server/dt_server_rev.py",
+      "sha256": "26c26fed21ec11e408822ba8b17b731f66b29789e309818b543c6e97a36ef3b0",
+      "size": 20367
+    },
+    {
+      "path": "dt_server/icons/BICYCLE.png",
+      "sha256": "892c553f3f82496f369411d9331c469a3a99bc20b52c860d98056a8e6b5525df",
+      "size": 175724
+    },
+    {
+      "path": "dt_server/icons/BUS.png",
+      "sha256": "6cad3b043bdeeed6cdaf9a25d26ec9af9a1d789ada5bb399d87c5daecdf05a81",
+      "size": 170087
+    },
+    {
+      "path": "dt_server/icons/CAR.png",
+      "sha256": "9bd0be76c086fdb894ffbffd2703559a92d929165e12d885cada149c2449f6ea",
+      "size": 183244
+    },
+    {
+      "path": "dt_server/icons/MOTORCYCLE.png",
+      "sha256": "8ceec853b516d98e70469479ca735a4997f6b09a02e67dcfea0876df8c5ab7c5",
+      "size": 230355
+    },
+    {
+      "path": "dt_server/icons/PEDESTRIAN.png",
+      "sha256": "fdc8e93c1584ccd9c9186ffd567e5219e7a0537f10290b0477a551956e8037cd",
+      "size": 159993
+    },
+    {
+      "path": "dt_server/icons/TRAILER.png",
+      "sha256": "06374faf70e33e4fa6ac2847ed33cb461417ca64f0370145f88f7bf35aac06e7",
+      "size": 127762
+    },
+    {
+      "path": "dt_server/icons/TRUCK.png",
+      "sha256": "08c375ed88e9d366e163aed9e778417ab2344eada52a9162cd48e1370cb1134c",
+      "size": 178326
+    },
+    {
+      "path": "dt_server/readme.md",
+      "sha256": "3943aad4c866194f4e91ce12a06d3c527acee5a21a7290218a610e58438fb49c",
+      "size": 251
+    },
+    {
+      "path": "dt_server/receiver.py",
+      "sha256": "1d82e8229d0c5820cab253916480383caaf9fa0d612efebbad1aadf0e789f68c",
+      "size": 3841
+    }
+  ],
+  "excluded": []
+}

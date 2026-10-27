@@ -1,0 +1,33 @@
+{
+  "python": "3.10.12 (main, Mar  3 2026, 11:56:32) [GCC 11.4.0]",
+  "modules": {
+    "torch": {
+      "version": "2.12.0+cu132",
+      "file": "/autoware_runtime/hyelin/.venv/lib/python3.10/site-packages/torch/__init__.py"
+    },
+    "numpy": {
+      "version": "1.24.4",
+      "file": "/autoware_runtime/hyelin/.venv/lib/python3.10/site-packages/numpy/__init__.py"
+    },
+    "PIL": {
+      "version": "12.3.0",
+      "file": "/autoware_runtime/hyelin/.venv/lib/python3.10/site-packages/PIL/__init__.py"
+    },
+    "transformers": {
+      "version": "5.14.1",
+      "file": "/autoware_runtime/hyelin/.venv/lib/python3.10/site-packages/transformers/__init__.py"
+    },
+    "diffusers": {
+      "import_error_type": "ModuleNotFoundError",
+      "message": "No module named 'diffusers'"
+    },
+    "cv2": {
+      "version": "4.5.4",
+      "file": "/usr/lib/python3/dist-packages/cv2.cpython-310-aarch64-linux-gnu.so"
+    },
+    "rclpy": {
+      "version": "not exposed",
+      "file": "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py"
+    }
+  }
+}

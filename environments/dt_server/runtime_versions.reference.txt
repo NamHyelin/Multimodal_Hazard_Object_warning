@@ -1,0 +1,6 @@
+# Observed import versions only; not a complete installation recipe.
+torch==2.6.0+cu124
+numpy==2.2.6
+Pillow==12.3.0
+transformers==5.17.0
+diffusers==0.40.0
