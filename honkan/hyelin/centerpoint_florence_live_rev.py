@@ -2,15 +2,21 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
+import fcntl
+import hashlib
 import json
 import math
+import os
+import re
 import threading
 import time
 import socket
+import struct
 from collections import deque
+from pathlib import Path
 from pipeline_runtime import (
-    InstanceLock,
     create_session_directory,
     make_node_name,
     make_run_id,
@@ -39,6 +45,31 @@ from tf2_ros import Buffer, TransformListener, TransformException
 
 
 DT_SENDER_VERSION = "UDP_LATEST_ONLY_FINAL_V3"
+HYELIN_ROOT = Path(__file__).resolve().parent
+
+
+def require_hyelin_path(path):
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.is_relative_to(HYELIN_ROOT):
+        raise ValueError(f'Output path must stay under {HYELIN_ROOT}: {resolved}')
+    return resolved
+
+
+class InstanceLock:
+    """The revision's runtime lock lives inside hyelin with its other state."""
+    def __init__(self, pipeline, *identity):
+        digest = hashlib.sha256('\n'.join((pipeline,*identity)).encode()).hexdigest()[:16]
+        folder = require_hyelin_path(HYELIN_ROOT/'.locks')
+        folder.mkdir(exist_ok=True)
+        self.file = (folder/f'{pipeline}_{digest}.lock').open('a+')
+        try:
+            fcntl.flock(self.file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            self.file.close()
+            raise RuntimeError('A live hyelin revision already owns these topics') from exc
+
+    def close(self):
+        self.file.close()
 
 LABEL_NAMES = {
     0: "UNKNOWN",
@@ -63,6 +94,41 @@ def stamp_sec(stamp) -> float:
 def sync_cuda(device: torch.device) -> None:
     if device.type == "cuda":
         torch.cuda.synchronize()
+
+
+def encode_hazard_crop(crop, jpeg_quality=90):
+    ok, encoded = cv2.imencode('.jpg', crop, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
+    if not ok:
+        raise RuntimeError('Hazard-Crop JPEG encoding failed')
+    return base64.b64encode(encoded).decode('ascii')
+
+
+def read_tcp_exact(sock, size):
+    data = bytearray()
+    while len(data) < size:
+        chunk = sock.recv(size-len(data))
+        if not chunk:
+            raise EOFError('DT closed the TCP connection')
+        data.extend(chunk)
+    return data
+
+
+def exchange_tcp_frame(sock, packet):
+    data = json.dumps(packet, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    if len(data) > 32 * 1024 * 1024:
+        raise ValueError('DT frame exceeds 32 MiB')
+    sent_at = time.time()
+    sock.sendall(struct.pack('!I', len(data)) + data)
+    size, = struct.unpack('!I', read_tcp_exact(sock, 4))
+    if not 0 < size <= 16384:
+        raise ValueError('Invalid DT response length')
+    response = json.loads(read_tcp_exact(sock, size))
+    received_at = time.time()
+    if not response.get('ok'):
+        raise RuntimeError(response.get('error', 'DT render failed'))
+    if 'frame_index' in packet and response.get('frame_index') != packet['frame_index']:
+        raise RuntimeError('DT response frame ID does not match request')
+    return response, sent_at, received_at, len(data) + 4
 
 
 def ros_image_to_bgr(msg: RosImage) -> np.ndarray:
@@ -217,27 +283,83 @@ def position_and_dimensions(obj):
     return center, dims
 
 
-def dimension_ratio(a: np.ndarray, b: np.ndarray) -> float:
-    ratios = np.maximum(a, b) / np.maximum(np.minimum(a, b), 1e-3)
-    return float(np.max(ratios))
-
-
-def load_florence(model_id: str, device: torch.device):
+def load_florence(model_id: str, device: torch.device, semantic_attention: bool = False):
     dtype = torch.float16 if device.type == "cuda" else torch.float32
 
     print(f"[Florence] loading processor: {model_id}")
-    processor = AutoProcessor.from_pretrained(model_id)
+    local_model = dict(local_files_only=True, cache_dir=str(HYELIN_ROOT/'cache/huggingface/hub'))
+    processor = AutoProcessor.from_pretrained(model_id, **local_model)
 
     print(f"[Florence] loading model: {model_id}")
     model = Florence2ForConditionalGeneration.from_pretrained(
         model_id,
         dtype=dtype,
+        **local_model,
+        **({'attn_implementation': 'eager'} if semantic_attention else {}),
     ).to(device)
     model.eval()
 
     p = next(model.parameters())
     print(f"[Florence] loaded | device={p.device} dtype={p.dtype}")
     return processor, model, dtype
+
+
+def semantic_word_importance(outputs, input_ids, model, tokenizer):
+    """Aggregate the final two decoder layers and map generated BPE to words."""
+    steps = outputs.cross_attentions
+    if not steps or len(steps) >= outputs.sequences.shape[-1]:
+        raise RuntimeError('Florence did not return aligned generation cross-attention')
+    image_mask = input_ids[0] == model.config.image_token_id
+    count = int(image_mask.sum().item())
+    side = math.isqrt(count)
+    pooled = 0
+    if side * side != count:
+        side = math.isqrt(max(count - 1, 0))
+        pooled = 1
+    if side < 2 or side * side + pooled != count:
+        raise RuntimeError(f'Unexpected Florence image token count: {count}')
+
+    means = []
+    for step in steps:
+        if len(step) < 2 or any(x is None or x.shape[-1] != image_mask.numel() for x in step[-2:]):
+            raise RuntimeError('Florence cross-attention encoder axis does not match input_ids')
+        means.append(torch.stack([x[0, :, -1, :].float().mean(0) for x in step[-2:]]).mean(0))
+    visual = torch.stack(means)[:, image_mask]
+    spatial = visual[:, pooled:]
+    attention = spatial / spatial.sum(-1, keepdim=True).clamp_min(1e-12)
+    axes = torch.linspace(0, 1, side, device=visual.device)
+    yy, xx = torch.meshgrid(axes, axes, indexing='ij')
+    mu_x = attention @ xx.flatten()
+    mu_y = attention @ yy.flatten()
+    centrality = torch.exp(-((mu_x - .5).square() + (mu_y - .5).square()) / (2 * .25**2))
+    entropy = -(attention * attention.clamp_min(1e-12).log()).sum(-1)
+    concentration = (1 - entropy / math.log(side * side)).clamp(0, 1)
+    scores = (visual.sum(-1) * centrality * concentration).tolist()
+    ids = outputs.sequences[0, -len(steps):].tolist()
+    special = set(tokenizer.all_special_ids)
+    pairs = [(token, score) for token, score in zip(ids, scores) if token not in special]
+    if not pairs:
+        return []
+    ids = [token for token, _ in pairs]
+    def decode(values):
+        return tokenizer.decode(values, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+    caption = decode(ids)
+    bounds = [0]
+    for end in range(1, len(ids) + 1):
+        prefix = decode(ids[:end])
+        shared = len(os.path.commonprefix((caption, prefix)))
+        bounds.append(max(bounds[-1], shared))
+    words = list(re.finditer(r"[^\W_]+(?:[-’'][^\W_]+)*", caption))
+    if not words:
+        return []
+    word_scores = [max((score for i, (_, score) in enumerate(pairs)
+                        if (bounds[i] < word.end() and bounds[i+1] > word.start())
+                        or (bounds[i] == bounds[i+1] and word.start() <= bounds[i] < word.end())),
+                       default=0.) for word in words]
+    q = [math.exp(s / .2) for s in word_scores]
+    total = sum(q)
+    return [{'index': i, 'token': word.group(), 'importance': round(value / total, 8)}
+            for i, (word, value) in enumerate(zip(words, q))]
 
 
 class CenterPointFlorenceNode(Node):
@@ -404,27 +526,22 @@ class CenterPointFlorenceNode(Node):
 
         self.dt_sender_thread = None
         self.dt_udp_socket = None
-        if self.dt_send_enabled:
+        self.dt_tcp_socket = None
+        if self.dt_send_enabled and args.transport == 'udp':
             self.dt_udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             # Non-blocking UDP: if the local kernel buffer is ever full, drop
             # this stale frame rather than blocking perception.
             self.dt_udp_socket.setblocking(False)
 
         # ------------------------------------------------------------------
-        # 3D semantic cache
-        # ------------------------------------------------------------------
-        self.semantic_cache = []
-        self.next_cache_id = 1
-
-        # ------------------------------------------------------------------
         # Florence
         # ------------------------------------------------------------------
-        self.processor, self.florence, self.florence_dtype = load_florence(
-            args.florence_model, self.device
-        )
-
-        if args.warmup and self.device.type == "cuda":
-            self.warmup_florence()
+        if not args.hazard_crop:
+            self.processor, self.florence, self.florence_dtype = load_florence(
+                args.florence_model, self.device, args.semantic_attention
+            )
+            if args.warmup and self.device.type == "cuda":
+                self.warmup_florence()
 
         # ------------------------------------------------------------------
         # ROS subscriptions
@@ -496,11 +613,6 @@ class CenterPointFlorenceNode(Node):
             f"{args.confidence_threshold:.3f}"
         )
         self.get_logger().info(
-            f"3D cache: distance<={args.cache_distance_m:.2f} m, "
-            f"dimension-ratio<={args.cache_max_dimension_ratio:.2f}, "
-            f"TTL={args.cache_ttl_sec:.1f}s, refresh={args.cache_refresh_sec:.1f}s"
-        )
-        self.get_logger().info(
             f"2D bbox: projected LiDAR points inside CenterPoint 3D box | "
             f"margin={args.box_point_margin_m:.2f} m | "
             f"sync={args.image_sync_mode}"
@@ -560,7 +672,10 @@ class CenterPointFlorenceNode(Node):
 
         dt_sender = getattr(self, "dt_sender_thread", None)
         if dt_sender is not None and dt_sender.is_alive():
-            dt_sender.join(timeout=2.0)
+            dt_sender.join(timeout=2.0 if self.args.transport == 'udp' else 30.0)
+
+        if self.dt_tcp_socket is not None:
+            self.dt_tcp_socket.close()
 
         udp_sock = getattr(self, "dt_udp_socket", None)
         self.dt_udp_socket = None
@@ -657,6 +772,10 @@ class CenterPointFlorenceNode(Node):
                     }
                 ),
             }
+            if record.get('semantic_tokens'):
+                obj_packet['semantic_tokens'] = record['semantic_tokens']
+            if record.get('crop_jpeg_b64'):
+                obj_packet['crop_jpeg_b64'] = record['crop_jpeg_b64']
             objects.append(obj_packet)
 
         return {
@@ -823,11 +942,22 @@ class CenterPointFlorenceNode(Node):
                     transmitted_timestamp=transmitted_timestamp,
                 )
 
-                self.send_dt_packet_udp(
-                    packet,
-                    frame_record,
-                    transmitted_timestamp=transmitted_timestamp,
-                )
+                if self.args.transport == 'tcp':
+                    try:
+                        if self.dt_tcp_socket is None:
+                            self.dt_tcp_socket = socket.create_connection(self.dt_receiver_addr, timeout=25)
+                            self.dt_tcp_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                        packet['run_id'] = self.run_id
+                        reply, tx, end, size = exchange_tcp_frame(self.dt_tcp_socket, packet)
+                        self.telemetry_append('transmissions.jsonl', dict(reply,
+                            seq=packet['latest_only_seq'], tx_wall=tx, ack_wall=end, bytes=size))
+                    except (OSError, EOFError, ValueError, RuntimeError) as exc:
+                        self.get_logger().error(f'DT TCP frame {packet["frame_index"]}: {exc}')
+                        if self.dt_tcp_socket is not None:
+                            self.dt_tcp_socket.close()
+                            self.dt_tcp_socket = None
+                else:
+                    self.send_dt_packet_udp(packet, frame_record, transmitted_timestamp)
 
                 self.last_attempted_dt_packet_seq = slot_seq
 
@@ -1422,102 +1552,7 @@ class CenterPointFlorenceNode(Node):
         return bbox, None, len(uv)
 
     # ----------------------------------------------------------------------
-    # 3D semantic cache
-    # ----------------------------------------------------------------------
-    @staticmethod
-    def cache_class_compatible(current_label: int, cached_label: int) -> bool:
-        return (
-            current_label == cached_label
-            or current_label == 0
-            or cached_label == 0
-        )
-
-    def purge_semantic_cache(self, now_ns: int) -> None:
-        ttl_ns = int(self.args.cache_ttl_sec * 1e9)
-        self.semantic_cache = [
-            entry
-            for entry in self.semantic_cache
-            if now_ns - entry["last_seen_ns"] <= ttl_ns
-        ]
-
-    def find_cache_match(
-        self,
-        label: int,
-        center: np.ndarray,
-        dims: np.ndarray,
-        now_ns: int,
-        used_cache_ids: set,
-    ):
-        self.purge_semantic_cache(now_ns)
-
-        best = None
-        best_distance = float("inf")
-
-        for entry in self.semantic_cache:
-            if entry["cache_id"] in used_cache_ids:
-                continue
-
-            if not self.cache_class_compatible(label, entry["label"]):
-                continue
-
-            distance_m = float(np.linalg.norm(center - entry["center"]))
-            dims_ratio = dimension_ratio(dims, entry["dims"])
-
-            if distance_m > self.args.cache_distance_m:
-                continue
-            if dims_ratio > self.args.cache_max_dimension_ratio:
-                continue
-
-            if distance_m < best_distance:
-                best_distance = distance_m
-                best = {
-                    "entry": entry,
-                    "distance_m": distance_m,
-                    "dimension_ratio": dims_ratio,
-                }
-
-        return best
-
-    def update_cache_track(
-        self,
-        entry,
-        label: int,
-        center: np.ndarray,
-        dims: np.ndarray,
-        now_ns: int,
-    ) -> None:
-        if label != 0:
-            entry["label"] = label
-
-        entry["center"] = center.copy()
-        entry["dims"] = dims.copy()
-        entry["last_seen_ns"] = now_ns
-        entry["last_seen_frame"] = self.frame_index
-
-    def create_cache_entry(
-        self,
-        label: int,
-        center: np.ndarray,
-        dims: np.ndarray,
-        caption: str,
-        now_ns: int,
-    ):
-        entry = {
-            "cache_id": self.next_cache_id,
-            "label": label,
-            "center": center.copy(),
-            "dims": dims.copy(),
-            "caption": caption,
-            "caption_created_ns": now_ns,
-            "last_seen_ns": now_ns,
-            "last_seen_frame": self.frame_index,
-        }
-        self.next_cache_id += 1
-        self.semantic_cache.append(entry)
-        return entry
-
-    # ----------------------------------------------------------------------
-    # Florence
+    # Florence inputs
     # ----------------------------------------------------------------------
     def prepare_florence_inputs(self, crop_bgr: np.ndarray):
         start = time.perf_counter()
@@ -1544,6 +1579,9 @@ class CenterPointFlorenceNode(Node):
 
     def warmup_florence(self) -> None:
         dummy = np.zeros((128, 128, 3), dtype=np.uint8)
+        if self.args.semantic_attention:
+            self.run_florence(dummy)
+            return
         input_ids, pixel_values, _, _ = self.prepare_florence_inputs(dummy)
 
         sync_cuda(self.device)
@@ -1575,17 +1613,28 @@ class CenterPointFlorenceNode(Node):
         generate_start = time.perf_counter()
 
         with torch.inference_mode():
-            generated_ids = self.florence.generate(
+            outputs = self.florence.generate(
                 input_ids=input_ids,
                 pixel_values=pixel_values,
                 max_new_tokens=self.args.florence_max_new_tokens,
                 num_beams=1,
                 do_sample=False,
                 use_cache=True,
+                **({'return_dict_in_generate': True, 'output_attentions': True}
+                   if self.args.semantic_attention else {}),
             )
 
         sync_cuda(self.device)
         generate_ms = (time.perf_counter() - generate_start) * 1000.0
+        generated_ids = outputs.sequences if self.args.semantic_attention else outputs
+
+        semantic_tokens = None
+        attention_start = time.perf_counter()
+        if self.args.semantic_attention:
+            with torch.inference_mode():
+                semantic_tokens = semantic_word_importance(
+                    outputs, input_ids, self.florence, self.processor.tokenizer)
+        attention_ms = (time.perf_counter() - attention_start) * 1000.0
 
         decode_start = time.perf_counter()
         caption = self.processor.batch_decode(
@@ -1600,10 +1649,11 @@ class CenterPointFlorenceNode(Node):
             "preprocess_ms": preprocess_ms,
             "h2d_ms": h2d_ms,
             "generate_ms": generate_ms,
+            "attention_scoring_ms": attention_ms,
             "decode_ms": decode_ms,
             "total_ms": total_ms,
         }
-        return caption or "unknown", timings
+        return caption or "unknown", semantic_tokens, timings
 
     @staticmethod
     def draw_bbox(image, bbox, text, color, thickness=2):
@@ -1813,8 +1863,6 @@ class CenterPointFlorenceNode(Node):
                 T_detection_cloud,
             )
 
-        used_cache_ids = set()
-
         for object_index, obj in enumerate(msg.objects):
             confidence = float(obj.existence_probability)
             label, class_name, class_probability = self.get_label(obj)
@@ -1908,6 +1956,7 @@ class CenterPointFlorenceNode(Node):
                     None if image_bbox is None else list(image_bbox)
                 ),
                 "florence_caption": None,
+                "semantic_tokens": None,
                 "florence_triggered": False,
                 "semantic_source": "CenterPoint",
                 "cache_id": None,
@@ -1915,26 +1964,6 @@ class CenterPointFlorenceNode(Node):
                 "projection_error": projection_error,
                 "error": None,
             }
-
-            cache_match = self.find_cache_match(
-                label=label,
-                center=center,
-                dims=dims,
-                now_ns=centerpoint_stamp_ns,
-                used_cache_ids=used_cache_ids,
-            )
-
-            if cache_match is not None:
-                cache_entry = cache_match["entry"]
-                self.update_cache_track(
-                    cache_entry,
-                    label=label,
-                    center=center,
-                    dims=dims,
-                    now_ns=centerpoint_stamp_ns,
-                )
-                used_cache_ids.add(cache_entry["cache_id"])
-                record["cache_id"] = cache_entry["cache_id"]
 
             # CenterPoint detects 360 degrees. Objects outside this camera's FOV
             # cannot be cropped or drawn.
@@ -1976,6 +2005,16 @@ class CenterPointFlorenceNode(Node):
                 frame_record["objects"].append(record)
                 continue
 
+            if self.args.hazard_crop:
+                x1, y1, x2, y2 = image_bbox
+                crop = image_bgr[y1:y2, x1:x2]
+                if crop.size:
+                    record['crop_jpeg_b64'] = encode_hazard_crop(crop, self.args.jpeg_quality)
+                    record['semantic_source'] = 'HazardCrop'
+                self.draw_bbox(annotated, image_bbox, 'HAZARD CROP', (0, 165, 255), thickness=2)
+                frame_record['objects'].append(record)
+                continue
+
             # Keep the CenterPoint-derived object bbox tight, and make a
             # separate larger crop only for Florence.
             crop_bbox = expand_bbox_with_min_size(
@@ -2002,40 +2041,6 @@ class CenterPointFlorenceNode(Node):
                 thickness=2,
             )
 
-            # Reuse previous Florence caption for the same 3D object.
-            if cache_match is not None:
-                cache_entry = cache_match["entry"]
-                caption_age_ms = (
-                    centerpoint_stamp_ns - cache_entry["caption_created_ns"]
-                ) * 1e-6
-
-                if caption_age_ms <= self.args.cache_refresh_sec * 1000.0:
-                    caption = cache_entry["caption"]
-
-                    record["cache_hit"] = True
-                    record["semantic_source"] = "FlorenceCache"
-                    record["florence_caption"] = caption
-
-                    self.draw_bbox(
-                        annotated,
-                        crop_bbox,
-                        f"CACHE: {caption[:42]}",
-                        (255, 255, 0),
-                        thickness=2,
-                    )
-
-                    print(
-                        f"  [{object_index:02d}] CACHE REUSE "
-                        f"id={cache_entry['cache_id']} "
-                        f"class={class_name:<12} conf={confidence:.3f} | "
-                        f"3D_dist={cache_match['distance_m']:.2f} m "
-                        f"dim_ratio={cache_match['dimension_ratio']:.2f} | "
-                        f"caption={caption!r}"
-                    )
-
-                    frame_record["objects"].append(record)
-                    continue
-
             x1, y1, x2, y2 = crop_bbox
             crop = image_bgr[y1:y2, x1:x2]
 
@@ -2045,7 +2050,7 @@ class CenterPointFlorenceNode(Node):
                 continue
 
             try:
-                caption, timings = self.run_florence(crop)
+                caption, semantic_tokens, timings = self.run_florence(crop)
                 record['i2t_timings_ms'] = timings
                 record['crop_shape'] = list(crop.shape)
                 record['caption_utf8_bytes'] = len(caption.encode('utf-8'))
@@ -2053,29 +2058,7 @@ class CenterPointFlorenceNode(Node):
                 record["florence_triggered"] = True
                 record["semantic_source"] = "Florence"
                 record["florence_caption"] = caption
-
-                if cache_match is not None:
-                    cache_entry = cache_match["entry"]
-                    cache_entry["caption"] = caption
-                    cache_entry["caption_created_ns"] = centerpoint_stamp_ns
-                    self.update_cache_track(
-                        cache_entry,
-                        label=label,
-                        center=center,
-                        dims=dims,
-                        now_ns=centerpoint_stamp_ns,
-                    )
-                else:
-                    cache_entry = self.create_cache_entry(
-                        label=label,
-                        center=center,
-                        dims=dims,
-                        caption=caption,
-                        now_ns=centerpoint_stamp_ns,
-                    )
-                    used_cache_ids.add(cache_entry["cache_id"])
-
-                record["cache_id"] = cache_entry["cache_id"]
+                record["semantic_tokens"] = semantic_tokens
 
                 self.draw_bbox(
                     annotated,
@@ -2192,7 +2175,6 @@ class CenterPointFlorenceNode(Node):
             f"pipeline={pipeline_ms:.1f} ms | "
             f"result age="
             f"{frame_record['result_age_from_centerpoint_ms']:.1f} ms | "
-            f"semantic cache={len(self.semantic_cache)}"
         )
 
         self.telemetry_append('frames.jsonl', frame_record)
@@ -2214,6 +2196,12 @@ def parse_args() -> argparse.Namespace:
             "uncertainty-triggered Florence semantic refinement."
         )
     )
+    parser.add_argument('--semantic_attention', action='store_true',
+                        help='Send Florence word importance for distance-adaptive rendering.')
+    parser.add_argument('--hazard_crop', action='store_true',
+                        help='Send a tight JPEG bbox for uncertain objects instead of running Florence.')
+    parser.add_argument('--transport', choices=('udp','tcp'), default=None,
+                        help='Default: UDP for semantic modes, TCP for Hazard-Crop.')
 
     parser.add_argument(
         "--image_topic",
@@ -2248,7 +2236,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--confidence_threshold",
         type=float,
-        default=0.4,
+        default=0.5,
+        help="Optional crop processing threshold; does not change the CenterPoint detector.",
     )
 
     # Camera / projection
@@ -2373,30 +2362,6 @@ def parse_args() -> argparse.Namespace:
         default=64,
     )
 
-    # 3D cache
-    parser.add_argument(
-        "--cache_distance_m",
-        type=float,
-        default=1.5,
-        help="Maximum 3D center displacement to reuse a semantic cache entry.",
-    )
-    parser.add_argument(
-        "--cache_max_dimension_ratio",
-        type=float,
-        default=2.5,
-        help="Maximum box-dimension ratio for cache association.",
-    )
-    parser.add_argument(
-        "--cache_ttl_sec",
-        type=float,
-        default=2.0,
-    )
-    parser.add_argument(
-        "--cache_refresh_sec",
-        type=float,
-        default=5.0,
-    )
-
     # Florence
     parser.add_argument(
         "--florence_max_new_tokens",
@@ -2446,8 +2411,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--receiver_port",
         type=int,
-        default=8001,
-        help="DT server HTTP port.",
+        default=None,
+        help="Default: 8001 for UDP, 8003 for TCP.",
     )
     parser.add_argument(
         "--receiver_path",
@@ -2463,11 +2428,19 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.transport = args.transport or ('tcp' if args.hazard_crop else 'udp')
+    if args.receiver_port is None:
+        args.receiver_port = 8003 if args.transport == 'tcp' else 8001
+    if args.hazard_crop and (args.semantic_attention or args.transport != 'tcp'):
+        parser.error('--hazard_crop requires TCP and cannot be combined with --semantic_attention')
+    return args
 
 
 def main():
     args = parse_args()
+    args.output_dir = str(require_hyelin_path(args.output_dir))
+    os.environ['ROS_LOG_DIR'] = str(require_hyelin_path(os.environ.get('ROS_LOG_DIR', HYELIN_ROOT/'logs/ros')))
     if args.max_saved_frames < 0:
         raise ValueError("--max_saved_frames must be zero or greater")
 
