@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import argparse
+import base64
 import csv
 import hashlib
+import io
 import json
 import math
 import os
+import re
+import socket
+import struct
 import sys
 import time
 from datetime import datetime, timezone
@@ -21,8 +27,12 @@ ICON_DIR = BASE_DIR / 'icons'
 BACKGROUND_IMAGE_PATH = BASE_DIR / 'AR_background.jpg'
 
 RUN_TAG = os.environ.get('SEMCOMM_RUN_ID') or datetime.now().astimezone().strftime('%Y%m%d_%H%M')
+if not re.fullmatch(r'[a-zA-Z0-9_-][a-zA-Z0-9_.-]*', RUN_TAG):
+    raise ValueError('Invalid run ID')
 RUN_DIR = BASE_DIR / 'results' / f'results_{RUN_TAG}'
-EXCHANGE_DIR = BASE_DIR / 'dt_exchange'
+EXCHANGE_DIR = Path(os.environ.get('SEMCOMM_EXCHANGE_DIR', str(BASE_DIR / 'dt_exchange')))
+if not all(path.resolve().is_relative_to(BASE_DIR.resolve()) for path in (RUN_DIR, EXCHANGE_DIR)):
+    raise ValueError('DT results and exchange directories must stay within hyelin')
 LATEST_JSON_PATH = EXCHANGE_DIR / 'latest.json'
 GENERATED_ICON_DIR = RUN_DIR / 'generated_icons'
 RENDERED_DIR = RUN_DIR / 'rendered_frames'
@@ -114,6 +124,16 @@ _Z_PX_PER_M = (
 MODEL_ID = 'Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers'
 HEIGHT = 448
 WIDTH = 448
+RESOLUTIONS = (192, 256, 320, 448)
+POLICY = os.environ.get('SEMCOMM_POLICY', 'baseline')
+if POLICY not in {'baseline', 'adaptive', 'crop'}:
+    raise ValueError('SEMCOMM_POLICY must be baseline, adaptive or crop')
+T2I_CACHE_ENABLED = os.environ.get('SEMCOMM_T2I_CACHE', 'on') != 'off'
+# Fixed virtual observer at the midpoint of the near road edge of the DT canvas.
+AR_WORLD_XY = (float(os.environ.get('SEMCOMM_AR_X', (MAP_X_LEFT + MAP_X_RIGHT) / 2)),
+               float(os.environ.get('SEMCOMM_AR_Y', MAP_Y_BOTTOM)))
+if not all(math.isfinite(v) for v in AR_WORLD_XY):
+    raise ValueError('Virtual observer coordinates must be finite')
 GUIDANCE_SCALE = 4.5
 MAX_SEQUENCE_LENGTH = 64
 NUM_INFERENCE_STEPS = 1
@@ -156,11 +176,34 @@ def make_safe_name(text: str, max_length: int = 80) -> str:
     return (safe or 'object')[:max_length]
 
 
-def caption_to_cache_name(caption: str) -> str:
-    digest = hashlib.md5(caption.encode('utf-8')).hexdigest()[:10]
+def caption_to_cache_name(caption: str, resolution: int = HEIGHT) -> str:
+    digest = hashlib.md5(f'{caption}|{resolution}'.encode('utf-8')).hexdigest()[:10]
     # v2: generated image keeps its original foreground appearance;
     # only the white background is removed.
-    return f'{make_safe_name(caption, 40)}_{digest}_bgremoved_v2.png'
+    return f'{make_safe_name(caption, 40)}_{resolution}px_{digest}_bgremoved_v2.png'
+
+
+def select_generation_policy(caption, semantic_tokens, world_pos, policy=POLICY, observer_xy=AR_WORLD_XY):
+    distance = math.hypot(float(world_pos[0]) - observer_xy[0],
+                          float(world_pos[1]) - observer_xy[1])
+    rho = min(distance / 30.0, 1.0)
+    budget = round(2 + 6 * rho)
+    if policy == 'baseline':
+        return dict(prompt=caption, resolution=HEIGHT, distance_m=distance,
+                    word_budget=None, chosen_indices=[], fallback=False)
+    tokens = []
+    for row in semantic_tokens or []:
+        try:
+            token, index, score = str(row['token']).strip(), int(row['index']), float(row['importance'])
+            if token and index >= 0 and math.isfinite(score):
+                tokens.append((index, token, score))
+        except (KeyError, ValueError, TypeError):
+            continue
+    selected = sorted(sorted(tokens, key=lambda x: (-x[2], x[0]))[:budget])
+    return dict(prompt=' '.join(x[1] for x in selected) or caption,
+                resolution=RESOLUTIONS[round(rho * (len(RESOLUTIONS) - 1))],
+                distance_m=distance, word_budget=budget,
+                chosen_indices=[x[0] for x in selected], fallback=not selected)
 
 
 def remove_white_background(image: Image.Image, force_black: bool = True) -> Image.Image:
@@ -175,13 +218,19 @@ def remove_white_background(image: Image.Image, force_black: bool = True) -> Ima
     return out.crop(bbox) if bbox is not None else out
 
 
-def paste_icon_centered(canvas: Image.Image, icon: Image.Image, center_xy: tuple[int, int], box_wh: tuple[int, int]) -> None:
+def paste_icon_centered(canvas: Image.Image, icon: Image.Image, center_xy: tuple[int, int],
+                        box_wh: tuple[int, int], scale_up=False) -> tuple[int,int,int,int]:
     icon = icon.convert('RGBA').copy()
     resampling = getattr(Image, 'Resampling', Image).LANCZOS
-    icon.thumbnail((max(1, int(box_wh[0])), max(1, int(box_wh[1]))), resampling)
+    if scale_up:
+        factor = min(box_wh[0]/icon.width, box_wh[1]/icon.height)
+        icon = icon.resize((max(1, round(icon.width*factor)), max(1, round(icon.height*factor))), resampling)
+    else:
+        icon.thumbnail((max(1, int(box_wh[0])), max(1, int(box_wh[1]))), resampling)
     x = int(center_xy[0] - icon.width / 2)
     y = int(center_xy[1] - icon.height / 2)
     canvas.alpha_composite(icon, dest=(x, y))
+    return x, y, x+icon.width, y+icon.height
 
 
 def class_icon_candidates(class_name: str) -> list[str]:
@@ -319,25 +368,25 @@ class SanaIconGenerator:
         self.device = 'cuda'
         self.dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         print('Loading SANA-Sprint...', flush=True)
-        self.pipe = SanaSprintPipeline.from_pretrained(MODEL_ID, torch_dtype=self.dtype)
+        self.pipe = SanaSprintPipeline.from_pretrained(MODEL_ID, torch_dtype=self.dtype, local_files_only=True)
         self.pipe.to(self.device)
         self.pipe.set_progress_bar_config(disable=True)
         self.pipe.vae.disable_slicing()
         self.pipe.vae.disable_tiling()
         with torch.inference_mode():
-            _ = self.pipe(
-                **self._kwargs(
+            for resolution in RESOLUTIONS if POLICY == 'adaptive' else (HEIGHT,):
+                warm = self.pipe(**self._kwargs(
                     'single isolated object icon, centered, one object only, '
                     'solid black silhouette, pure white background, no text',
-                    0,
-                )
-            ).images[0]
+                    0, resolution)).images[0]
+                if warm.size != (resolution, resolution):
+                    raise RuntimeError(f'SANA returned {warm.size} for {resolution}px')
         torch.cuda.synchronize()
         print('SANA-Sprint ready.', flush=True)
 
-    def _kwargs(self, prompt: str, seed: int) -> dict:
+    def _kwargs(self, prompt: str, seed: int, resolution: int = HEIGHT) -> dict:
         d = dict(
-            prompt=prompt, height=HEIGHT, width=WIDTH,
+            prompt=prompt, height=resolution, width=resolution,
             num_inference_steps=NUM_INFERENCE_STEPS, intermediate_timesteps=INTERMEDIATE_TIMESTEPS,
             guidance_scale=GUIDANCE_SCALE, use_resolution_binning=False,
             max_sequence_length=MAX_SEQUENCE_LENGTH, clean_caption=False,
@@ -348,13 +397,13 @@ class SanaIconGenerator:
             d['intermediate_timesteps'] = INTERMEDIATE_TIMESTEPS
         return d
 
-    def generate_icon(self, caption: str) -> Image.Image:
-        cache_path = GENERATED_ICON_DIR / caption_to_cache_name(caption)
-        if cache_path.exists():
+    def generate_icon(self, caption: str, resolution: int = HEIGHT, use_cache: bool = True) -> Image.Image:
+        cache_path = GENERATED_ICON_DIR / caption_to_cache_name(caption, resolution)
+        if use_cache and cache_path.exists():
             return Image.open(cache_path).convert('RGBA')
         t0 = time.perf_counter()
         with torch.inference_mode():
-            image = self.pipe(**self._kwargs(PROMPT_PREFIX + ' '.join(caption.split()), 42)).images[0]
+            image = self.pipe(**self._kwargs(PROMPT_PREFIX + ' '.join(caption.split()), 42, resolution)).images[0]
         torch.cuda.synchronize()
         print(f'[SANA] {time.perf_counter()-t0:.3f}s caption={caption!r}', flush=True)
         # IMPORTANT:
@@ -380,7 +429,7 @@ class LatestFileRenderer:
             icon = load_class_icon(cls)
             self.class_icons[cls] = icon
             print(f'[ICON {"READY" if icon is not None else "MISSING"}] class={cls}', flush=True)
-        self.generator = SanaIconGenerator()
+        self.generator = SanaIconGenerator() if POLICY != 'crop' else None
         self.last_processed_seq = -1
         print(f'[RENDERER READY] watching={LATEST_JSON_PATH}', flush=True)
         print(f'[RENDERER READY] output={RENDERED_DIR}', flush=True)
@@ -393,21 +442,30 @@ class LatestFileRenderer:
         except (FileNotFoundError, json.JSONDecodeError):
             return None
 
-    def process_payload(self, payload: dict) -> Path:
+    def process_payload(self, payload: dict, *, record_payload=True) -> Path:
         frame = int(payload['frame_index'])
         seq = int(payload['latest_only_seq'])
         objects = payload.get('objects', [])
-        with (LOG_DIR / 'payloads.jsonl').open('a') as f:
-            f.write(json.dumps(dict(observed_at=time.time(), payload=payload)) + '\n')
+        observer_xy = tuple(float(x) for x in payload.get('observer_world_xy', AR_WORLD_XY))
+        if len(observer_xy) != 2 or not all(math.isfinite(x) for x in observer_xy):
+            raise ValueError('Invalid observer map coordinates')
+        if record_payload:
+            with (LOG_DIR / 'payloads.jsonl').open('a') as f:
+                f.write(json.dumps(dict(observed_at=time.time(), payload=payload)) + '\n')
         started = utc_now_iso()
         t0 = time.perf_counter()
         sana_sec = 0.0
+        overlays = []
         canvas = self.background.copy()
         image_width, image_height = canvas.size
 
         for obj in objects:
             cls = str(obj.get('class', '')).strip().upper()
             caption = obj.get('florence_caption')
+            crop_encoded = obj.get('crop_jpeg_b64')
+            overlay = dict(object_id=obj.get('object_id'), cls=cls, semantic=bool(caption or crop_encoded),
+                           eligible=False, drawn=False)
+            overlays.append(overlay)
             world_pos = obj.get('world_position_m')
             size_m = obj.get('size_m') or {}
             projected = project_world_to_view2(world_pos, image_width, image_height)
@@ -435,6 +493,7 @@ class LatestFileRenderer:
             # Clamp a small near-edge extrapolation into the visible image.
             u = min(max(u, 0), image_width - 1)
             v = min(max(v, 0), image_height - 1)
+            overlay.update(eligible=True, pixel_xy=[u, v])
 
             box_w, box_h = scaled_icon_box_px(
                 size_m,
@@ -447,29 +506,41 @@ class LatestFileRenderer:
                 class_icon = load_class_icon(cls)
                 self.class_icons[cls] = class_icon
 
-            if caption is not None and str(caption).strip():
+            if crop_encoded and POLICY == 'crop':
+                with Image.open(io.BytesIO(base64.b64decode(crop_encoded, validate=True))) as crop_img:
+                    if crop_img.format != 'JPEG' or crop_img.width*crop_img.height > 16_000_000:
+                        raise ValueError('Invalid Hazard-Crop dimensions or encoding')
+                    display_box = paste_icon_centered(canvas, crop_img, (u,v), (box_w,box_h), scale_up=True)
+                overlay.update(drawn=True, display_bbox=display_box, icon_placed_wall=time.time())
+            elif caption is not None and str(caption).strip() and self.generator is not None:
                 # Florence/T2I case:
                 # use ONLY the newly generated transparent PNG.
                 # Do not overlay the predefined detection-class icon.
                 ts = time.perf_counter()
                 clean_caption = str(caption).strip()
-                cache_hit = (GENERATED_ICON_DIR / caption_to_cache_name(clean_caption)).exists()
-                gen_icon = self.generator.generate_icon(clean_caption)
+                choice = select_generation_policy(clean_caption, obj.get('semantic_tokens'), world_pos, observer_xy=observer_xy)
+                filename = caption_to_cache_name(choice['prompt'], choice['resolution'])
+                cache_hit = T2I_CACHE_ENABLED and (GENERATED_ICON_DIR / filename).exists()
+                gen_icon = self.generator.generate_icon(choice['prompt'], choice['resolution'], use_cache=T2I_CACHE_ENABLED)
+                service_sec = time.perf_counter()-ts
                 with (LOG_DIR / 'generation.jsonl').open('a') as f:
                     f.write(json.dumps(dict(frame_index=frame, seq=seq,
                         object_id=obj.get('object_id'), caption=clean_caption,
-                        cache_hit=cache_hit, service_sec=time.perf_counter()-ts)) + '\n')
+                        cache_hit=cache_hit, service_sec=service_sec, icon_file=filename,
+                        policy=POLICY, observer_world_xy=observer_xy, **choice)) + '\n')
                 sana_sec += time.perf_counter() - ts
-                paste_icon_centered(
+                display_box = paste_icon_centered(
                     canvas,
                     gen_icon,
                     (u, v),
                     (box_w, box_h),
                 )
+                overlay.update(drawn=bool(gen_icon.getbbox()), display_bbox=display_box, icon_placed_wall=time.time())
             elif class_icon is not None:
                 # Normal CenterPoint case without T2I:
                 # keep using the predefined class icon.
-                paste_icon_centered(canvas, class_icon, (u, v), (box_w, box_h))
+                display_box = paste_icon_centered(canvas, class_icon, (u, v), (box_w, box_h))
+                overlay.update(drawn=bool(class_icon.getbbox()), display_bbox=display_box, icon_placed_wall=time.time())
             else:
                 print(f'[ICON NOT DRAWN] frame={frame} class={cls} reason=missing_icon', flush=True)
 
@@ -484,11 +555,16 @@ class LatestFileRenderer:
         save_path = RENDERED_DIR / f'frame_{frame:06d}_seq_{seq:09d}.jpg'
         ts = time.perf_counter()
         canvas.convert('RGB').save(save_path, format='JPEG', quality=JPEG_QUALITY, subsampling=2, optimize=False)
+        self.last_render_finished_at = time.time()
         save_sec = time.perf_counter() - ts
         total = time.perf_counter() - t0
+        finished = utc_now_iso()
+        with (LOG_DIR / 'overlays.jsonl').open('a') as f:
+            f.write(json.dumps(dict(frame_index=frame, seq=seq, policy=POLICY,
+                                    finished_at=finished, objects=overlays)) + '\n')
         append_csv_row({
             'frame_index': frame, 'latest_only_seq': seq, 'object_count': len(objects),
-            'processing_started_at_utc': started, 'processing_finished_at_utc': utc_now_iso(),
+            'processing_started_at_utc': started, 'processing_finished_at_utc': finished,
             'processing_sec': f'{total:.6f}', 'sana_icon_sec': f'{sana_sec:.6f}',
             'composition_sec': '', 'image_save_sec': f'{save_sec:.6f}',
             'saved_image_path': str(save_path), 'status': 'processed', 'error': ''
@@ -526,6 +602,12 @@ def main() -> None:
 def run_instrumented_receiver():
     # Same receiver implementation/protocol, with measurement at callback entry.
     import receiver
+    paths = argparse.ArgumentParser(add_help=False)
+    paths.add_argument('--exchange_dir', default=str(EXCHANGE_DIR))
+    args, _ = paths.parse_known_args()
+    if not Path(args.exchange_dir).expanduser().resolve().is_relative_to(BASE_DIR.resolve()):
+        raise ValueError('UDP exchange directory must stay within hyelin')
+    receiver.DEFAULT_EXCHANGE_DIR = EXCHANGE_DIR
     ensure_dirs()
     original = receiver.LatestUDPProtocol.datagram_received
     def measured(protocol, data, addr):
@@ -542,8 +624,65 @@ def run_instrumented_receiver():
     sys.argv.remove('--receiver')
     receiver.main()
 
+
+def run_tcp_renderer():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--serve-tcp', action='store_true')
+    parser.add_argument('--listen-host', default='172.16.1.203')
+    parser.add_argument('--port', type=int, default=8003)
+    args = parser.parse_args()
+
+    def recv_exact(conn, length):
+        body = bytearray()
+        while len(body) < length:
+            chunk = conn.recv(min(length - len(body), 65536))
+            if not chunk:
+                raise EOFError
+            body.extend(chunk)
+        return body
+
+    with socket.socket() as server:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((args.listen_host, args.port))
+        renderer = LatestFileRenderer()
+        server.listen(1)
+        print(f'[TCP READY] {args.listen_host}:{args.port} {POLICY}', flush=True)
+        while True:
+            conn, _ = server.accept()
+            with conn:
+                conn.settimeout(45)
+                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                while True:
+                    try:
+                        size, = struct.unpack('!I', recv_exact(conn, 4))
+                        if not 0 < size <= 32*1024*1024:
+                            break
+                        body = recv_exact(conn, size)
+                        received = time.time()
+                    except (EOFError, OSError):
+                        break
+                    try:
+                        data = json.loads(body)
+                        if data.get('clock_probe') is True:
+                            reply = dict(ok=True, dt_rx_wall=received, dt_reply_wall=time.time())
+                        else:
+                            path = renderer.process_payload(data, record_payload=False)
+                            reply = dict(ok=True, frame_index=data['frame_index'], dt_rx_wall=received,
+                                         dt_finish_wall=renderer.last_render_finished_at,
+                                         rendered_file=path.name)
+                    except Exception as exc:
+                        print(f'[TCP ERROR] {exc}', flush=True)
+                        reply = dict(ok=False, error=str(exc))
+                    response = json.dumps(reply, separators=(',', ':')).encode('utf-8')
+                    try:
+                        conn.sendall(struct.pack('!I', len(response)) + response)
+                    except OSError:
+                        break
+
 if __name__ == '__main__':
-    if '--receiver' in sys.argv:
+    if '--serve-tcp' in sys.argv:
+        run_tcp_renderer()
+    elif '--receiver' in sys.argv:
         run_instrumented_receiver()
     else:
         main()
