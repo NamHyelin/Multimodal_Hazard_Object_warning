@@ -81,6 +81,9 @@ The architecture is designed to evaluate **end-to-end behavior and latency** in 
 ## Hardware and Software
 
 The code is organized around a deployed roadside sensing system and a separate DT computing server. Exact hardware specifications must be confirmed from the original testbed inventory or machine outputs; they are intentionally **not guessed** here.
+<p align="center">
+  <img src="/site_fig.png" width="95%" alt="Testbed Environment"/>
+</p>
 
 | Component | Function | Hardware / specification |
 | :-- | :-- | :-- |
