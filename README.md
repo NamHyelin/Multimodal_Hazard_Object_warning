@@ -28,52 +28,6 @@ The architecture is designed to evaluate **end-to-end behavior and latency** in 
 </p>
 
 
-```text
-              ROADSIDE UNIT (RSU / honkan)
-        Camera frames + LiDAR point clouds
-                         │
-                         ▼
-                LiDAR CenterPoint
-              3D object detections
-                         │
-                         ▼
-             Confidence-based routing
-                  threshold = 0.4
-                  /            \
-           confident          low confidence
-               │                   │
-               ▼                   ▼
-       Class + position      Project 3D object
-                            into camera frame
-                            and crop object ROI
-                                    │
-                                    ▼
-                          Image-to-Text (I2T)
-                          context description
-                  \                 /
-                   \               /
-                    ▼             ▼
-                     UDP messages
-                          │
-                          ▼
-                DIGITAL TWIN SERVER
-                Incoming object metadata
-                          │
-             ┌────────────┴────────────┐
-             ▼                         ▼
-       Known object class       Text description
-             │                         │
-       Predefined icon          Text-to-Image (T2I)
-                                       │
-                                 Generated icon
-             └────────────┬────────────┘
-                          ▼
-                Place warning on DT view
-                          │
-                          ▼
-                    AR visualization
-```
-
 > **Detection clarification:** The primary documented RSU pipeline uses **LiDAR CenterPoint**. Although a script named `yolox_florence_live.py` exists for an alternative pipeline, YOLO/YOLOX is **not** the model used for the main LiDAR demonstration.
 
 ---
